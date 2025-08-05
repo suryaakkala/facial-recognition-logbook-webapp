@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { detectFaces } from "@/lib/face-recognition"
+import { detectFaces, loadFaceAPI } from "@/lib/face-recognition"
 import { Camera, CameraOff, CheckCircle } from "lucide-react"
 
 interface User {
@@ -32,13 +32,10 @@ export default function CameraScanner() {
 
   const loadUsers = useCallback(async () => {
     try {
-      const response = await fetch("/api/users")
-      if (response.ok) {
-        const userData = await response.json()
-        setUsers(userData)
-      }
-    } catch (error) {
-      console.error("Failed to load users:", error)
+      const res = await fetch("/api/users")
+      if (res.ok) setUsers(await res.json())
+    } catch (err) {
+      console.error("Failed to load users:", err)
     }
   }, [])
 
@@ -46,38 +43,49 @@ export default function CameraScanner() {
     loadUsers()
   }, [loadUsers])
 
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "user" },
-      })
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        streamRef.current = stream
-        setIsCameraActive(true)
-        setMessage(null)
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to access camera. Please check permissions." })
-    }
-  }
+  const startCamera = () => setIsCameraActive(true)
 
   const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    if (videoRef.current) videoRef.current.srcObject = null
+    streamRef.current = null
     setIsCameraActive(false)
     setRecognizedFaces([])
   }
 
+  useEffect(() => {
+  const enableCamera = async () => {
+    if (!videoRef.current) {
+      requestAnimationFrame(enableCamera)
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+      videoRef.current.srcObject = stream
+      streamRef.current = stream
+      setMessage(null)
+    } catch (err) {
+      console.error("Camera access error:", err)
+      setMessage({ type: "error", text: "Camera access denied or not available." })
+    }
+  }
+
+  if (isCameraActive) {
+    requestAnimationFrame(enableCamera)
+  }
+
+  return () => {
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    if (videoRef.current) videoRef.current.srcObject = null
+    streamRef.current = null
+  }
+}, [isCameraActive])
+
+
   const captureAndRecognize = async () => {
     if (!videoRef.current || !canvasRef.current || users.length === 0) {
-      setMessage({ type: "error", text: "Camera not ready or no users registered" })
+      setMessage({ type: "error", text: "Camera not ready or no users." })
       return
     }
 
@@ -85,120 +93,86 @@ export default function CameraScanner() {
     setMessage(null)
     setRecognizedFaces([])
 
-    try {
-      const canvas = canvasRef.current
-      const video = videoRef.current
-      const ctx = canvas.getContext("2d")
+    const canvas = canvasRef.current
+    const video = videoRef.current
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
 
-      if (!ctx) return
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-      // Set canvas dimensions to match video
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
+    const faceapi = await loadFaceAPI()
+    const detections = await detectFaces(video)
 
-      // Draw current video frame to canvas
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    if (!detections.length) {
+      setMessage({ type: "error", text: "No face detected." })
+      setLoading(false)
+      return
+    }
 
-      // Create image element from canvas for face detection
-      const imageData = canvas.toDataURL("image/jpeg")
-      const img = new Image()
+    const recognized: RecognizedFace[] = []
+    const THRESHOLD = 0.4
 
-      img.onload = async () => {
-        try {
-          const detections = await detectFaces(img)
+    for (const detection of detections) {
+      let bestMatch: RecognizedFace | null = null
+      let bestDistance = Infinity
 
-          if (detections.length === 0) {
-            setMessage({
-              type: "error",
-              text: "No faces detected. Please position yourself clearly in front of the camera.",
-            })
-            setLoading(false)
-            return
+      for (const user of users) {
+        const descriptor = new Float32Array(user.face_encoding)
+        const distance = faceapi.euclideanDistance(detection.descriptor, descriptor)
+        if (distance < bestDistance && distance < THRESHOLD) {
+          bestDistance = distance
+          bestMatch = {
+            user,
+            confidence: Math.max(0, (1 - distance / THRESHOLD) * 100),
           }
-
-          const recognized: RecognizedFace[] = []
-
-          for (const detection of detections) {
-            let bestMatch: { user: User; confidence: number } | null = null
-            let bestDistance = Number.POSITIVE_INFINITY
-
-            for (const user of users) {
-              if (user.face_encoding) {
-                const userDescriptor = new Float32Array(user.face_encoding)
-                const distance = detection.descriptor.reduce(
-                  (sum, val, i) => sum + Math.pow(val - userDescriptor[i], 2),
-                  0,
-                )
-
-                if (distance < bestDistance && distance < 0.6) {
-                  bestDistance = distance
-                  bestMatch = {
-                    user,
-                    confidence: Math.max(0, (1 - distance) * 100),
-                  }
-                }
-              }
-            }
-
-            if (bestMatch) {
-              recognized.push(bestMatch)
-            }
-          }
-
-          setRecognizedFaces(recognized)
-
-          if (recognized.length > 0) {
-            setMessage({
-              type: "success",
-              text: `Recognized: ${recognized.map((r) => r.user.name).join(", ")}`,
-            })
-          } else {
-            setMessage({ type: "error", text: "No registered faces found. Please register first or try again." })
-          }
-        } catch (error) {
-          setMessage({ type: "error", text: "Error during face recognition" })
-        } finally {
-          setLoading(false)
         }
       }
 
-      img.src = imageData
-    } catch (error) {
-      setMessage({ type: "error", text: "Error capturing image" })
-      setLoading(false)
+      if (bestMatch) recognized.push(bestMatch)
     }
+
+    setRecognizedFaces(recognized)
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    faceapi.draw.drawDetections(canvas, detections)
+
+    setMessage({
+      type: recognized.length ? "success" : "error",
+      text: recognized.length
+        ? `Recognized: ${recognized.map(r => r.user.name).join(", ")}`
+        : "No known face matched.",
+    })
+
+    setLoading(false)
   }
 
   const markAttendance = async () => {
-    if (recognizedFaces.length === 0) {
-      setMessage({ type: "error", text: "No faces recognized to mark attendance" })
+    if (!recognizedFaces.length) {
+      setMessage({ type: "error", text: "No recognized face." })
       return
     }
 
     setLoading(true)
-
     try {
-      const attendancePromises = recognizedFaces.map((face) =>
-        fetch("/api/attendance", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            user_id: face.user.user_id,
-            confidence_score: face.confidence / 100,
-          }),
-        }),
+      await Promise.all(
+        recognizedFaces.map(face =>
+          fetch("/api/attendance", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user_id: face.user.user_id,
+              confidence_score: face.confidence / 100,
+            }),
+          })
+        )
       )
-
-      await Promise.all(attendancePromises)
-      setMessage({
-        type: "success",
-        text: `Attendance marked successfully for ${recognizedFaces.length} person(s)!`,
-      })
+      setMessage({ type: "success", text: "Attendance marked." })
       setRecognizedFaces([])
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to mark attendance" })
+    } catch {
+      setMessage({ type: "error", text: "Failed to mark attendance." })
     } finally {
       setLoading(false)
     }
@@ -216,52 +190,46 @@ export default function CameraScanner() {
       <CardContent className="space-y-4">
         <div className="flex justify-center gap-2">
           {!isCameraActive ? (
-            <Button onClick={startCamera} size="lg" className="flex items-center gap-2">
-              <Camera className="h-5 w-5" />
+            <Button onClick={startCamera}>
+              <Camera className="mr-2 h-5 w-5" />
               Start Camera
             </Button>
           ) : (
-            <Button onClick={stopCamera} variant="outline" size="lg" className="flex items-center gap-2 bg-transparent">
-              <CameraOff className="h-5 w-5" />
+            <Button onClick={stopCamera} variant="outline">
+              <CameraOff className="mr-2 h-5 w-5" />
               Stop Camera
             </Button>
           )}
         </div>
 
         {isCameraActive && (
-          <div className="space-y-4">
-            <div className="relative bg-black rounded-lg overflow-hidden">
-              <video ref={videoRef} autoPlay playsInline muted className="w-full h-auto max-h-96 object-cover" />
-              <canvas ref={canvasRef} className="hidden" />
+          <>
+            <div className="relative">
+              <video ref={videoRef} autoPlay muted playsInline className="w-full max-h-96 object-cover rounded-lg" />
+              <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
             </div>
 
             <div className="flex justify-center gap-2">
-              <Button onClick={captureAndRecognize} disabled={loading} size="lg" className="flex items-center gap-2">
-                <Camera className="h-5 w-5" />
+              <Button onClick={captureAndRecognize} disabled={loading}>
                 {loading ? "Scanning..." : "Scan Face"}
               </Button>
 
               {recognizedFaces.length > 0 && (
-                <Button
-                  onClick={markAttendance}
-                  disabled={loading}
-                  size="lg"
-                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
-                >
-                  <CheckCircle className="h-5 w-5" />
+                <Button onClick={markAttendance} disabled={loading} className="bg-green-600 hover:bg-green-700">
+                  <CheckCircle className="mr-2 h-5 w-5" />
                   Mark Present
                 </Button>
               )}
             </div>
-          </div>
+          </>
         )}
 
         {recognizedFaces.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="font-semibold text-center">Recognized:</h3>
-            <div className="flex flex-wrap justify-center gap-2">
-              {recognizedFaces.map((face, index) => (
-                <Badge key={index} variant="secondary" className="text-sm px-3 py-1">
+          <div className="space-y-2 text-center">
+            <h3 className="font-semibold">Recognized:</h3>
+            <div className="flex justify-center flex-wrap gap-2">
+              {recognizedFaces.map((face, i) => (
+                <Badge key={i} className="text-sm px-3 py-1">
                   {face.user.name} ({face.confidence.toFixed(1)}%)
                 </Badge>
               ))}
@@ -274,8 +242,6 @@ export default function CameraScanner() {
             <AlertDescription className="text-center">{message.text}</AlertDescription>
           </Alert>
         )}
-
-        <div className="text-center text-sm text-muted-foreground">{users.length} users registered in the system</div>
       </CardContent>
     </Card>
   )
