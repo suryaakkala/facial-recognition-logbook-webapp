@@ -94,7 +94,10 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
             </Button>
           </form>
 
-          <div className="mt-4 text-sm text-center text-muted-foreground">Default credentials: admin / admin123</div>
+          <div className="mt-4 text-sm text-center text-muted-foreground">Contact 
+            <a href="https://t.me/Mrunknown_user1/" className="text-blue-500"> @Mrunknown_user1 </a>
+            for admin access.
+          </div>
         </CardContent>
       </Card>
     </div>
