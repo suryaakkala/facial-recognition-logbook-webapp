@@ -71,18 +71,29 @@ export default function CameraScanner() {
 
   useEffect(() => {
     const enableCamera = async () => {
-      if (!videoRef.current || !selectedCamera) {
+      if (!videoRef.current) {
         requestAnimationFrame(enableCamera)
         return
       }
 
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: selectedCamera } },
-        })
+        // If no selected camera yet, just request default
+        const constraints = selectedCamera
+          ? { video: { deviceId: { exact: selectedCamera } } }
+          : { video: true }
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints)
         videoRef.current.srcObject = stream
         streamRef.current = stream
         setMessage(null)
+
+        // After permission granted, fetch cameras with labels
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const videoDevices = devices.filter(d => d.kind === "videoinput")
+        setCameras(videoDevices)
+        if (!selectedCamera && videoDevices.length > 0) {
+          setSelectedCamera(videoDevices[0].deviceId)
+        }
       } catch (err) {
         console.error("Camera access error:", err)
         setMessage({ type: "error", text: "Camera access denied or not available." })
@@ -99,6 +110,7 @@ export default function CameraScanner() {
       streamRef.current = null
     }
   }, [isCameraActive, selectedCamera])
+
 
   const captureAndRecognize = async () => {
     if (!videoRef.current || !canvasRef.current || users.length === 0) {
