@@ -26,6 +26,10 @@ export default function CameraScanner() {
   const [isCameraActive, setIsCameraActive] = useState(false)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
+
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
+  const [selectedCamera, setSelectedCamera] = useState<string | null>(null)
+
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -43,6 +47,18 @@ export default function CameraScanner() {
     loadUsers()
   }, [loadUsers])
 
+  useEffect(() => {
+    async function getCameras() {
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const videoDevices = devices.filter(d => d.kind === "videoinput")
+      setCameras(videoDevices)
+      if (!selectedCamera && videoDevices.length > 0) {
+        setSelectedCamera(videoDevices[0].deviceId)
+      }
+    }
+    getCameras()
+  }, [selectedCamera])
+
   const startCamera = () => setIsCameraActive(true)
 
   const stopCamera = () => {
@@ -54,34 +70,35 @@ export default function CameraScanner() {
   }
 
   useEffect(() => {
-  const enableCamera = async () => {
-    if (!videoRef.current) {
+    const enableCamera = async () => {
+      if (!videoRef.current || !selectedCamera) {
+        requestAnimationFrame(enableCamera)
+        return
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: selectedCamera } },
+        })
+        videoRef.current.srcObject = stream
+        streamRef.current = stream
+        setMessage(null)
+      } catch (err) {
+        console.error("Camera access error:", err)
+        setMessage({ type: "error", text: "Camera access denied or not available." })
+      }
+    }
+
+    if (isCameraActive) {
       requestAnimationFrame(enableCamera)
-      return
     }
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
-      videoRef.current.srcObject = stream
-      streamRef.current = stream
-      setMessage(null)
-    } catch (err) {
-      console.error("Camera access error:", err)
-      setMessage({ type: "error", text: "Camera access denied or not available." })
+    return () => {
+      streamRef.current?.getTracks().forEach(track => track.stop())
+      if (videoRef.current) videoRef.current.srcObject = null
+      streamRef.current = null
     }
-  }
-
-  if (isCameraActive) {
-    requestAnimationFrame(enableCamera)
-  }
-
-  return () => {
-    streamRef.current?.getTracks().forEach(track => track.stop())
-    if (videoRef.current) videoRef.current.srcObject = null
-    streamRef.current = null
-  }
-}, [isCameraActive])
-
+  }, [isCameraActive, selectedCamera])
 
   const captureAndRecognize = async () => {
     if (!videoRef.current || !canvasRef.current || users.length === 0) {
@@ -201,6 +218,23 @@ export default function CameraScanner() {
             </Button>
           )}
         </div>
+
+        {isCameraActive && cameras.length > 1 && (
+          <div className="flex justify-center">
+            <select
+              className="p-2 border rounded-md"
+              value={selectedCamera || ""}
+              onChange={e => setSelectedCamera(e.target.value)}
+              aria-label="Select camera"
+            >
+              {cameras.map(cam => (
+                <option key={cam.deviceId} value={cam.deviceId}>
+                  {cam.label || `Camera ${cam.deviceId}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {isCameraActive && (
           <>
