@@ -69,7 +69,7 @@ suryaakkala-facial-recognition-logbook-webapp/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/your-username/facial-recognition-logbook.git
+   git clone https://github.com/suryaakkala/facial-recognition-logbook-webapp.git
    cd facial-recognition-logbook
    ```
 
